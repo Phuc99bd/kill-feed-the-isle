@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""One-shot kill-feed updater: fetch API rows and edit a Discord message embed."""
+"""One-shot kill-feed updater: fetch API rows and edit a Discord message embed.
 
-from __future__ import annotations
+Compatible with Python 3.6+ (CentOS 7 system Python).
+"""
+
+from __future__ import print_function
 
 import argparse
 import logging
 import os
 import sys
 import time
-from typing import Any
+from typing import Any, Dict, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -27,10 +30,11 @@ logging.basicConfig(
 logger = logging.getLogger("kill_feed")
 
 
-def fetch_kill_feed(species: str) -> dict[str, Any]:
+def fetch_kill_feed(species):
+    # type: (str) -> Dict[str, Any]
     """GET the species kill-feed board. Retries transient network errors."""
     params = {"species": species}
-    last_error: Exception | None = None
+    last_error = None  # type: Optional[Exception]
 
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -43,7 +47,7 @@ def fetch_kill_feed(species: str) -> dict[str, Any]:
         except (requests.Timeout, requests.ConnectionError) as exc:
             last_error = exc
             if attempt < MAX_RETRIES:
-                delay = BACKOFF_SECONDS * (2**attempt)
+                delay = BACKOFF_SECONDS * (2 ** attempt)
                 logger.warning(
                     "Kill-feed fetch attempt %s failed (%s); retrying in %.1fs",
                     attempt + 1,
@@ -65,15 +69,17 @@ def fetch_kill_feed(species: str) -> dict[str, Any]:
     raise last_error
 
 
-def _growth_label(growth: Any) -> str:
+def _growth_label(growth):
+    # type: (Any) -> str
     if growth is None:
         return "?"
-    return f"{int(growth)}%"
+    return "{}%".format(int(growth))
 
 
-def _format_row(row: dict[str, Any]) -> str:
+def _format_row(row):
+    # type: (Dict[str, Any]) -> str
     at = int(row.get("at") or 0)
-    ts = f"<t:{at}:R>"
+    ts = "<t:{}:R>".format(at)
     victim_name = row.get("victim_name") or "Unknown"
     victim_species = row.get("victim_species") or "?"
     victim_growth = _growth_label(row.get("victim_growth"))
@@ -86,26 +92,39 @@ def _format_row(row: dict[str, Any]) -> str:
         killer_species = row.get("killer_species") or "?"
         killer_growth = _growth_label(row.get("killer_growth"))
         return (
-            f"🩸 **{killer_name}** `{killer_species}` ({killer_growth}) "
-            f"đã hạ gục **{victim_name}** `{victim_species}` ({victim_growth}) • {ts}"
+            "🩸 **{killer}** `{ks}` ({kg}) "
+            "đã hạ gục **{victim}** `{vs}` ({vg}) • {ts}"
+        ).format(
+            killer=killer_name,
+            ks=killer_species,
+            kg=killer_growth,
+            victim=victim_name,
+            vs=victim_species,
+            vg=victim_growth,
+            ts=ts,
         )
 
     return (
-        f"💀 **{victim_name}** `{victim_species}` ({victim_growth}) "
-        f"chết tự nhiên • {ts}"
+        "💀 **{victim}** `{vs}` ({vg}) chết tự nhiên • {ts}"
+    ).format(
+        victim=victim_name,
+        vs=victim_species,
+        vg=victim_growth,
+        ts=ts,
     )
 
 
-def format_kill_feed(data: dict[str, Any], max_rows: int) -> dict[str, Any]:
+def format_kill_feed(data, max_rows):
+    # type: (Dict[str, Any], int) -> Dict[str, Any]
     """Pure function: build a Discord embed dict from API payload."""
     species = data.get("species") or "Unknown"
-    title = f"Kill Feed — {species}"
+    title = "Kill Feed — {}".format(species)
 
     if not data.get("ok") or not data.get("available") or data.get("gated"):
         reason = data.get("reason") or "unavailable"
         return {
             "title": title,
-            "description": f"Feed unavailable (`{reason}`).",
+            "description": "Feed unavailable (`{}`).".format(reason),
             "color": 0x808080,
         }
 
@@ -122,11 +141,13 @@ def format_kill_feed(data: dict[str, Any], max_rows: int) -> dict[str, Any]:
         if data.get("more") and remaining <= 0:
             lines.append("... and more")
         elif extra > 0:
-            lines.append(f"... and {extra} more")
+            lines.append("... and {} more".format(extra))
 
     description = "\n".join(lines) if lines else "_No recent kills._"
     if len(description) > EMBED_DESCRIPTION_LIMIT:
-        description = description[: EMBED_DESCRIPTION_LIMIT - 20].rstrip() + "\n... truncated"
+        description = (
+            description[: EMBED_DESCRIPTION_LIMIT - 20].rstrip() + "\n... truncated"
+        )
 
     return {
         "title": title,
@@ -135,16 +156,14 @@ def format_kill_feed(data: dict[str, Any], max_rows: int) -> dict[str, Any]:
     }
 
 
-def edit_discord_message(
-    token: str,
-    channel_id: str,
-    message_id: str,
-    embed: dict[str, Any],
-) -> None:
+def edit_discord_message(token, channel_id, message_id, embed):
+    # type: (str, str, str, Dict[str, Any]) -> None
     """PATCH an existing Discord message with a new embed."""
-    url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}"
+    url = "{}/channels/{}/messages/{}".format(
+        DISCORD_API_BASE, channel_id, message_id
+    )
     headers = {
-        "Authorization": f"Bot {token}",
+        "Authorization": "Bot {}".format(token),
         "Content-Type": "application/json",
     }
     payload = {"embeds": [embed]}
@@ -160,31 +179,32 @@ def edit_discord_message(
     if response.status_code == 404:
         raise RuntimeError("Discord 404: bad CHANNEL_ID or MESSAGE_ID")
     if response.status_code == 429:
-        retry_after = response.headers.get("Retry-After") or response.json().get(
-            "retry_after", "?"
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is None:
+            try:
+                retry_after = response.json().get("retry_after", "?")
+            except Exception:
+                retry_after = "?"
+        raise RuntimeError(
+            "Discord 429: rate limited; Retry-After={}".format(retry_after)
         )
-        raise RuntimeError(f"Discord 429: rate limited; Retry-After={retry_after}")
 
     if not response.ok:
         raise RuntimeError(
-            f"Discord HTTP {response.status_code}: {response.text[:300]}"
+            "Discord HTTP {}: {}".format(response.status_code, response.text[:300])
         )
 
 
-def _require_env(name: str) -> str:
+def _require_env(name):
+    # type: (str) -> str
     value = os.getenv(name, "").strip()
     if not value:
-        raise SystemExit(f"Missing required env var: {name}")
+        raise SystemExit("Missing required env var: {}".format(name))
     return value
 
 
-def run_once(
-    token: str,
-    channel_id: str,
-    message_id: str,
-    species: str,
-    max_rows: int,
-) -> None:
+def run_once(token, channel_id, message_id, species, max_rows):
+    # type: (str, str, str, str, int) -> None
     logger.info("Fetching kill-feed for species=%s", species)
     data = fetch_kill_feed(species)
     embed = format_kill_feed(data, max_rows=max_rows)
@@ -194,7 +214,8 @@ def run_once(
     logger.info("Updated message %s in channel %s", message_id, channel_id)
 
 
-def main() -> int:
+def main():
+    # type: () -> int
     parser = argparse.ArgumentParser(description="Update Discord kill-feed message")
     parser.add_argument(
         "--interval",
@@ -210,7 +231,7 @@ def main() -> int:
     channel_id = _require_env("CHANNEL_ID")
     message_id = _require_env("MESSAGE_ID")
     species = os.getenv("SPECIES", "Deinosuchus").strip() or "Deinosuchus"
-    max_rows_raw = os.getenv("MAX_ROWS", "15").strip() or "15"
+    max_rows_raw = os.getenv("MAX_ROWS", "30").strip() or "30"
     try:
         max_rows = max(1, int(max_rows_raw))
     except ValueError:

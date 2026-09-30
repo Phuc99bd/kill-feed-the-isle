@@ -1,2 +1,6 @@
-requests>=2.31.0
-python-dotenv>=1.0.0
+requests==2.27.1
+python-dotenv==0.19.2
+urllib3>=1.26.0,<1.27
+chardet>=3.0.2,<5
+idna>=2.5,<3
+certifi>=2017.4.17
